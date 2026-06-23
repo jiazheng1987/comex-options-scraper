@@ -1,7 +1,5 @@
 name: Scrape COMEX Options
 
-# 美东 17:00 = UTC 21:00（EDT, 夏令时）或 UTC 22:00（EST, 标准时）
-# GitHub cron 仅支持 UTC，因此注册两个触发点，并在 job 内校验当前是否为美东 17 点
 on:
   schedule:
     - cron: "0 21 * * *"
@@ -25,16 +23,13 @@ jobs:
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Manual run — skipping time gate"
             exit 0
           fi
           hour=$(TZ='America/New_York' date +%H)
           if [ "$hour" = "17" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
-            echo "Current Eastern hour is 17 — proceeding"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
-            echo "Current Eastern hour is $hour — skipping"
           fi
 
       - name: Checkout repository
@@ -53,8 +48,11 @@ jobs:
         if: steps.gate.outputs.run == 'true'
         run: pip install -r requirements.txt
 
-      - name: Run COMEX options scraper
+      - name: Run COMEX options scraper (via ScraperAPI)
         if: steps.gate.outputs.run == 'true'
+        env:
+          SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
+          SCRAPERAPI_PREMIUM: "true"
         run: python fetch_comex_options.py --once
 
       - name: Commit and push updated CSV
