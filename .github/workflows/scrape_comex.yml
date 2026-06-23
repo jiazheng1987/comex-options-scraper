@@ -2,8 +2,9 @@ name: Scrape COMEX Options
 
 on:
   schedule:
-    - cron: "0 21 * * *"
-    - cron: "0 22 * * *"
+    # 20:30 America/New_York. Two UTC entries cover daylight saving time changes.
+    - cron: "30 0 * * *"
+    - cron: "30 1 * * *"
   workflow_dispatch:
 
 permissions:
@@ -18,7 +19,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Check if 5 PM Eastern (skip duplicate UTC trigger)
+      - name: Check if 8:30 PM Eastern (skip duplicate UTC trigger)
         id: gate
         run: |
           if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
@@ -26,7 +27,7 @@ jobs:
             exit 0
           fi
           hour=$(TZ='America/New_York' date +%H)
-          if [ "$hour" = "17" ]; then
+          if [ "$hour" = "20" ]; then
             echo "run=true" >> "$GITHUB_OUTPUT"
           else
             echo "run=false" >> "$GITHUB_OUTPUT"
@@ -53,17 +54,16 @@ jobs:
         env:
           SCRAPERAPI_KEY: ${{ secrets.SCRAPERAPI_KEY }}
           SCRAPERAPI_PREMIUM: "true"
-        run: python fetch_comex_options.py --once
+        run: |
+          python fetch_comex_options.py --once
+          if [ ! -f comex_options_data.csv ]; then
+            echo "::error::脚本未生成 comex_options_data.csv，说明 CME 未返回可用数据，请展开本步骤日志查看详情"
+            exit 1
+          fi
 
       - name: Commit and push updated CSV
         if: steps.gate.outputs.run == 'true'
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add comex_options_data.csv
-          if git diff --staged --quiet; then
-            echo "No changes to comex_options_data.csv"
-          else
-            git commit -m "chore: update comex_options_data.csv [automated]"
-            git push
-          fi
+   
