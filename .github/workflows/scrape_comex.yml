@@ -66,4 +66,14 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-   
+          if [ ! -f comex_options_data.csv ]; then
+            echo "comex_options_data.csv 不存在，跳过提交"
+            exit 0
+          fi
+          git add comex_options_data.csv
+          if git diff --staged --quiet; then
+            echo "No changes to comex_options_data.csv"
+          else
+            git commit -m "chore: update comex_options_data.csv [automated]"
+            git push
+          fi
