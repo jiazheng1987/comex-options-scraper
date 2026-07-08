@@ -1,0 +1,44 @@
+name: Databento Max Pain (COMEX Gold Options)
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "10 2 * * *"  # 每天 UTC 02:10（可改）
+
+permissions:
+  contents: write
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run Databento max pain script
+        env:
+          DATABENTO_API_KEY: ${{ secrets.DATABENTO_API_KEY }}
+        run: |
+          python fetch_databento_max_pain.py --parent OG.OPT --lookback-days 21 --output databento_og_max_pain.csv
+
+      - name: Commit and push CSV
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add databento_og_max_pain.csv
+          if git diff --staged --quiet; then
+            echo "No changes"
+          else
+            git commit -m "chore: update Databento OG max pain CSV [automated]"
+            git push
+          fi
