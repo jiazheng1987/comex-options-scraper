@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -36,6 +37,64 @@ def _date_window(lookback_days: int) -> tuple[str, str]:
     end_dt = datetime.now(timezone.utc)
     start_dt = end_dt - timedelta(days=lookback_days)
     return start_dt.date().isoformat(), end_dt.date().isoformat()
+
+
+def _date_window_from_end(lookback_days: int, end: str | None) -> tuple[str, str]:
+    if end:
+        end_ts = pd.Timestamp(end)
+        if end_ts.tzinfo is None:
+            end_ts = end_ts.tz_localize("UTC")
+        else:
+            end_ts = end_ts.tz_convert("UTC")
+        start_ts = end_ts - pd.Timedelta(days=lookback_days)
+        return start_ts.isoformat(), end_ts.isoformat()
+    return _date_window(lookback_days)
+
+
+def _extract_entitlement_cutoff(error_text: str) -> str | None:
+    # Example from Databento:
+    # "Try again with an end time before 2026-07-07T23:29:34.923663000Z"
+    match = re.search(r"before\s+([0-9T:\.\-]+Z)", error_text)
+    if not match:
+        return None
+    return match.group(1)
+
+
+def _get_range_with_entitlement_retry(
+    client: db.Historical,
+    *,
+    dataset: str,
+    schema: str,
+    symbols: list[str],
+    stype_in: str,
+    start: str,
+    end: str,
+) -> tuple[pd.DataFrame, str]:
+    try:
+        df = client.timeseries.get_range(
+            dataset=dataset,
+            schema=schema,
+            symbols=symbols,
+            stype_in=stype_in,
+            start=start,
+            end=end,
+        ).to_df()
+        return df, end
+    except Exception as exc:
+        text = str(exc)
+        cutoff = _extract_entitlement_cutoff(text)
+        if not cutoff:
+            raise
+        print(f"[WARN] Entitlement window exceeded for schema={schema}. Retrying with end={cutoff}")
+        df = client.timeseries.get_range(
+            dataset=dataset,
+            schema=schema,
+            symbols=symbols,
+            stype_in=stype_in,
+            start=start,
+            end=cutoff,
+        ).to_df()
+        return df, cutoff
 
 
 def _normalize_strike(df: pd.DataFrame) -> pd.Series:
@@ -161,6 +220,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--dataset", type=str, default="GLBX.MDP3", help="Databento dataset. Default: GLBX.MDP3")
     parser.add_argument("--parent", type=str, default="OG.OPT", help="Parent symbol for options product. Default: OG.OPT")
     parser.add_argument("--lookback-days", type=int, default=14, help="Historical lookback window to find latest OI.")
+    parser.add_argument("--end", type=str, default=None, help="Optional end timestamp/date (UTC), e.g. 2026-07-07T23:29:34Z")
     parser.add_argument("--output", type=str, default="databento_og_max_pain.csv", help="CSV output path for max pain by expiration.")
     return parser.parse_args()
 
@@ -168,30 +228,34 @@ def parse_args() -> argparse.Namespace:
 def main() -> None:
     args = parse_args()
     api_key = _resolve_api_key(args.api_key)
-    start, end = _date_window(args.lookback_days)
+    start, end = _date_window_from_end(args.lookback_days, args.end)
     print(f"[INFO] Querying {args.dataset} {args.parent} from {start} to {end}")
 
     client = db.Historical(api_key)
 
-    df_def_raw = client.timeseries.get_range(
+    df_def_raw, used_end = _get_range_with_entitlement_retry(
+        client,
         dataset=args.dataset,
         schema="definition",
         symbols=[args.parent],
         stype_in="parent",
         start=start,
         end=end,
-    ).to_df()
+    )
     df_def = _prepare_definition_latest(df_def_raw)
     print(f"[INFO] Definitions: {len(df_def)} option instruments")
 
-    df_stats_raw = client.timeseries.get_range(
+    df_stats_raw, used_end_stats = _get_range_with_entitlement_retry(
+        client,
         dataset=args.dataset,
         schema="statistics",
         symbols=[args.parent],
         stype_in="parent",
         start=start,
-        end=end,
-    ).to_df()
+        end=used_end,
+    )
+    if used_end_stats != used_end:
+        print(f"[WARN] Statistics used a stricter entitlement end: {used_end_stats}")
     df_oi, latest_ref = _prepare_latest_oi(df_stats_raw)
     print(f"[INFO] Latest OI reference timestamp: {latest_ref}")
     print(f"[INFO] OI instruments in latest snapshot: {len(df_oi)}")
